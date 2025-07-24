@@ -1,6 +1,7 @@
 import os
 import cv2
 import numpy as np
+import pytesseract
 from fastapi import FastAPI, Request
 import telegram
 from telegram import Update
@@ -11,35 +12,39 @@ app = FastAPI()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = telegram.Bot(token=BOT_TOKEN)
 
-def analyze_candles(image: Image.Image) -> str:
+def analyze_chart_with_ocr(image: Image.Image) -> str:
     # تحويل الصورة إلى OpenCV
-    open_cv_image = np.array(image.convert('RGB'))[:, :, ::-1].copy()
-    gray = cv2.cvtColor(open_cv_image, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (3, 3), 0)
-    _, thresh = cv2.threshold(blur, 200, 255, cv2.THRESH_BINARY_INV)
+    img = np.array(image.convert('RGB'))[:, :, ::-1].copy()
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    candles = [cnt for cnt in contours if cv2.contourArea(cnt) > 50]
+    # قراءة النصوص الظاهرة (OCR)
+    text = pytesseract.image_to_string(gray)
+    text = text.lower()
 
-    if len(candles) < 3:
-        return "⚠️ لا يمكن تحليل الشارت بدقة - الشموع غير واضحة بما يكفي"
+    # تحليل بناءً على الكلمات المفتاحية
+    decision = ""
+    reason = ""
 
-    heights = []
-    for cnt in candles:
-        x, y, w, h = cv2.boundingRect(cnt)
-        heights.append(h)
+    if "rsi" in text:
+        try:
+            import re
+            match = re.search(r"rsi\s*[:=]?\s*(\d{1,3})", text)
+            if match:
+                rsi_value = int(match.group(1))
+                if rsi_value > 70:
+                    decision = "✅ التوصية: بيع (SELL)"
+                    reason = f"📊 السبب: RSI مرتفع ({rsi_value}) - تشبع شرائي"
+                elif rsi_value < 30:
+                    decision = "✅ التوصية: شراء (BUY)"
+                    reason = f"📊 السبب: RSI منخفض ({rsi_value}) - تشبع بيعي"
+        except:
+            pass
 
-    avg_height = np.mean(heights)
-    max_height = np.max(heights)
-    min_height = np.min(heights)
+    if not decision:
+        decision = "⚠️ لا توجد إشارة واضحة"
+        reason = "📊 السبب: لم يتم التعرف على RSI أو نماذج قوية"
 
-    # تحليل بسيط على الزخم والحجم
-    if max_height > avg_height * 1.5:
-        return "✅ التوصية: بيع (SELL)\n📊 شمعة هابطة ابتلاعية بوضوح\n⏱️ الصفقة: دقيقة واحدة"
-    elif min_height < avg_height * 0.6:
-        return "✅ التوصية: شراء (BUY)\n📊 شموع قصيرة تدل على تباطؤ الاتجاه وانعكاس ممكن\n⏱️ الصفقة: دقيقة واحدة"
-    else:
-        return "⚠️ التوصية: السوق متذبذب - لا توجد إشارة دخول مؤكدة حالياً"
+    return f"{decision}\n{reason}\n⏱️ الصفقة: دقيقة واحدة"
 
 @app.post("/")
 async def webhook(request: Request):
@@ -52,7 +57,7 @@ async def webhook(request: Request):
         byte_array = photo_file.download_as_bytearray()
         image = Image.open(io.BytesIO(byte_array))
 
-        decision = analyze_candles(image)
-        bot.send_message(chat_id=chat_id, text=decision)
+        result = analyze_chart_with_ocr(image)
+        bot.send_message(chat_id=chat_id, text=result)
 
     return {"ok": True}
