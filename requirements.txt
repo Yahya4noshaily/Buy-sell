@@ -1,6 +1,0 @@
-fastapi
-python-telegram-bot==13.15
-Pillow
-opencv-python
-pytesseract
-numpy
